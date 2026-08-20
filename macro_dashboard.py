@@ -70,10 +70,20 @@ BTC_BANDS = {"10Y": (2.50, 2.35), "20Y": (2.55, 2.40), "30Y": (2.40, 2.25)}
 # 수집 유틸
 # ------------------------------------------------------------------
 
-def http_get(url, timeout=30):
-    r = requests.get(url, timeout=timeout, headers={"User-Agent": "macro-dashboard/1.0"})
-    r.raise_for_status()
-    return r
+def http_get(url, timeout=(10, 45), retries=2):
+    """(connect, read) 타임아웃 + 재시도. CI 러너에서 간헐적으로 느려지는 소스 대비."""
+    last = None
+    for attempt in range(retries + 1):
+        try:
+            r = requests.get(url, timeout=timeout,
+                             headers={"User-Agent": "macro-dashboard/1.0"})
+            r.raise_for_status()
+            return r
+        except requests.RequestException as e:
+            last = e
+            if attempt < retries:
+                print(f"    재시도 {attempt + 1}/{retries}: {type(e).__name__}", flush=True)
+    raise last
 
 
 def fetch_fred(sid, lookback_days=420):
@@ -610,7 +620,7 @@ def main():
     for key, meta in SERIES.items():
         try:
             data[key] = fetch_fred(meta["sid"])
-            print(f"[ok] {key:8s} {meta['sid']:<20s} n={len(data[key])}")
+            print(f"[ok] {key:8s} {meta['sid']:<20s} n={len(data[key])}", flush=True)
         except Exception as e:
             errors.append(f"{key}: {e}")
             data[key] = []
@@ -622,14 +632,14 @@ def main():
         yf = fetch_yahoo_fx("JPY=X")
         data["USDJPY"] = yf
         data["_jpy_src"] = "Yahoo 실시간"
-        print(f"[ok] USDJPY  Yahoo JPY=X          n={len(yf)} (FRED 대체)")
+        print(f"[ok] USDJPY  Yahoo JPY=X          n={len(yf)} (FRED 대체)", flush=True)
     except Exception as e:
         errors.append(f"USDJPY(Yahoo): {e}")
         print(f"[!!] USDJPY  야후 실패, FRED 지연값 사용: {e}", file=sys.stderr)
 
     try:
         auctions = fetch_auctions()
-        print(f"[ok] auctions n={len(auctions)}")
+        print(f"[ok] auctions n={len(auctions)}", flush=True)
     except Exception as e:
         auctions = []
         errors.append(f"auctions: {e}")
