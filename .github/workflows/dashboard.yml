@@ -27,10 +27,15 @@ jobs:
       - name: 대시보드 생성
         timeout-minutes: 12
         env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           PAGE_URL: ${{ vars.PAGE_URL }}
         run: |
+          if [ -z "$FRED_API_KEY" ]; then
+            echo "::error::FRED_API_KEY 시크릿이 없습니다. 러너 IP에서는 fredgraph CSV가 차단되므로 키가 필수입니다."
+            exit 1
+          fi
           ARGS="--out docs --json"
           # 시크릿이 등록돼 있을 때만 텔레그램 발송
           if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then

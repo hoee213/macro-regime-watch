@@ -30,7 +30,11 @@ import requests
 # 데이터 소스 정의
 # ------------------------------------------------------------------
 
+# fred.stlouisfed.org(그래프 CSV)는 GitHub Actions 등 데이터센터 IP를 차단한다
+# (연결 즉시 거부, http=000). api.stlouisfed.org는 도달되므로 키가 있으면 그쪽을 쓴다.
 FRED_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={sid}&cosd={start}"
+FRED_API = ("https://api.stlouisfed.org/fred/series/observations"
+            "?series_id={sid}&api_key={key}&file_type=json&observation_start={start}")
 
 SERIES = {
     # H.4.1 계열 (주간, 수요일 기준)
@@ -87,8 +91,25 @@ def http_get(url, timeout=(10, 45), retries=2):
 
 
 def fetch_fred(sid, lookback_days=420):
-    """FRED fredgraph CSV -> [(date, float), ...] 오름차순. 결측('.')은 제외."""
+    """FRED 관측치 -> [(date, float), ...] 오름차순. 결측('.')은 제외.
+
+    FRED_API_KEY가 있으면 공식 API를, 없으면 그래프 CSV를 쓴다.
+    CI(데이터센터 IP)에서는 CSV 쪽이 차단되므로 키가 사실상 필수.
+    """
     start = (dt.date.today() - dt.timedelta(days=lookback_days)).isoformat()
+    key = os.environ.get("FRED_API_KEY", "").strip()
+    if key:
+        obs = http_get(FRED_API.format(sid=sid, key=key, start=start)).json()
+        rows = []
+        for o in obs.get("observations", []):
+            if o.get("value") in (".", "", "NA", None):
+                continue
+            try:
+                rows.append((dt.date.fromisoformat(o["date"]), float(o["value"])))
+            except (ValueError, KeyError):
+                continue
+        rows.sort()
+        return rows
     txt = http_get(FRED_CSV.format(sid=sid, start=start)).text
     rows = []
     rdr = csv.reader(io.StringIO(txt))
@@ -671,6 +692,13 @@ def main():
 
     if args.telegram:
         send_telegram(telegram_text(signals, gen_at, args.url))
+
+    # 절반 이상 결측이면 대시보드가 사실상 무의미하므로 실패로 끝낸다
+    missing = sum(1 for s in signals if s.status == NA)
+    if missing * 2 >= len(signals):
+        print("", file=sys.stderr)
+        print(f"[!!] 신호 {len(signals)}개 중 {missing}개 결측 — 실패 처리", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
