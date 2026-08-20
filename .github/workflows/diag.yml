@@ -1,0 +1,27 @@
+name: 소스 도달성 진단
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 후보 엔드포인트 응답 확인
+        run: |
+          probe() {
+            printf '%-46s ' "$1"
+            curl -s -o /dev/null --max-time 25 \
+              -w 'http=%{http_code} time=%{time_total}s size=%{size_download}\n' \
+              -H 'User-Agent: macro-dashboard/1.0' "$2" || echo "FAILED(timeout/err)"
+          }
+          probe "FRED graph CSV"        "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10&cosd=2026-06-01"
+          probe "FRED data txt"         "https://fred.stlouisfed.org/data/DGS10.txt"
+          probe "FRED API (키없음=400정상)" "https://api.stlouisfed.org/fred/series/observations?series_id=DGS10&file_type=json"
+          probe "Fed DDP H41"           "https://www.federalreserve.gov/datadownload/Output.aspx?rel=H41&filetype=csv&lastobs=10&series=c7ca2a4c2f2a4e5b7e9b4d0b2a4e5b7e"
+          probe "Treasury 일별금리 CSV"   "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/2026/all?type=daily_treasury_yield_curve&field_tdr_date_value=2026&_format=csv"
+          probe "TreasuryDirect 입찰"     "https://www.treasurydirect.gov/TA_WS/securities/search?type=Bond&days=60&format=json"
+          probe "Yahoo JPY=X"           "https://query1.finance.yahoo.com/v8/finance/chart/JPY=X?range=5d&interval=1d"
+          probe "Yahoo ^TNX(10Y)"       "https://query1.finance.yahoo.com/v8/finance/chart/%5ETNX?range=5d&interval=1d"
+          probe "Stooq"                 "https://stooq.com/q/d/l/?s=10usy.b&i=d"
