@@ -1,0 +1,25 @@
+name: 소스 도달성 진단
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: |
+          probe() { printf '%-14s http=%s  %s\n' "$1" "$(curl -s -o /tmp/o -w '%{http_code}' -m 20 -A 'Mozilla/5.0' "$2")" "$(head -c 150 /tmp/o | tr '\n' ' ')"; }
+          probe fredgraph      "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10&cosd=2026-09-01"
+          probe fred_txt       "https://fred.stlouisfed.org/data/DGS10.txt"
+          probe fred_api_nokey "https://api.stlouisfed.org/fred/series/observations?series_id=DGS10&file_type=json"
+          probe jina_proxy     "https://r.jina.ai/https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10&cosd=2026-09-01"
+          probe allorigins     "https://api.allorigins.win/raw?url=https%3A%2F%2Ffred.stlouisfed.org%2Fgraph%2Ffredgraph.csv%3Fid%3DDGS10%26cosd%3D2026-09-01"
+          probe treasury_nom   "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/2026/all?type=daily_treasury_yield_curve&field_tdr_date_value=2026&page&_format=csv"
+          probe treasury_real  "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/2026/all?type=daily_treasury_real_yield_curve&field_tdr_date_value=2026&page&_format=csv"
+          probe nyfed_acm_xls  "https://www.newyorkfed.org/medialibrary/media/research/data_indicators/ACMTermPremium.xls"
+          probe nyfed_acm_csv  "https://www.newyorkfed.org/medialibrary/media/research/data_indicators/ACMTermPremium.csv"
+          probe fed_h41_html   "https://www.federalreserve.gov/releases/h41/current/h41.htm"
+          probe fed_ddp_h41    "https://www.federalreserve.gov/datadownload/Output.aspx?rel=H41&series=all&lastobs=10&filetype=csv&label=include&layout=seriescolumn"
+          probe fed_ddp_zip    "https://www.federalreserve.gov/datadownload/Output.aspx?rel=H41&filetype=zip"
+          probe yahoo_jpy      "https://query1.finance.yahoo.com/v8/finance/chart/JPY=X?range=5d&interval=1d"
+          probe yahoo_tnx      "https://query1.finance.yahoo.com/v8/finance/chart/%5ETNX?range=5d&interval=1d"
+          probe treasurydirect "https://www.treasurydirect.gov/TA_WS/securities/search?type=Note&days=60&format=json"
