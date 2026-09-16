@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - run: pip install requests
+      - run: pip install requests xlrd
 
       - name: 대시보드 생성
         timeout-minutes: 12
@@ -32,9 +32,10 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           PAGE_URL: ${{ vars.PAGE_URL }}
         run: |
+          # FRED_API_KEY는 선택 사항: 없으면 재무부·연준·뉴욕연준 원천 소스로 수집하고
+          # ICE BofA OAS(FRED 전용) 카드만 결측으로 표시된다.
           if [ -z "$FRED_API_KEY" ]; then
-            echo "::error::FRED_API_KEY 시크릿이 없습니다. 러너 IP에서는 fredgraph CSV가 차단되므로 키가 필수입니다."
-            exit 1
+            echo "::notice::FRED_API_KEY 없음 — 원천 소스 모드(OAS 카드 결측)"
           fi
           ARGS="--out docs --json"
           # 시크릿이 등록돼 있을 때만 텔레그램 발송

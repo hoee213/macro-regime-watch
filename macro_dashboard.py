@@ -32,6 +32,8 @@ import requests
 
 # fred.stlouisfed.org(그래프 CSV)는 GitHub Actions 등 데이터센터 IP를 차단한다
 # (연결 즉시 거부, http=000). api.stlouisfed.org는 도달되므로 키가 있으면 그쪽을 쓴다.
+# 키가 없어도 돌아가도록, FRED가 재가공하는 원천(재무부·연준·뉴욕연준)을 1차 소스로 쓴다.
+# OAS(ICE BofA)만은 원천이 유료라 FRED 외 대안이 없다 → 키 없으면 결측 카드.
 FRED_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={sid}&cosd={start}"
 FRED_API = ("https://api.stlouisfed.org/fred/series/observations"
             "?series_id={sid}&api_key={key}&file_type=json&observation_start={start}")
@@ -46,11 +48,26 @@ SERIES = {
     "DGS10":     dict(sid="DGS10",             name="미 10년물",              unit="%",   scale=1.0),
     "DGS30":     dict(sid="DGS30",             name="미 30년물",              unit="%",   scale=1.0),
     "T5YIFR":    dict(sid="T5YIFR",            name="5y5y 포워드 브레이크이븐", unit="%",   scale=1.0),
-    "ACMTP10":   dict(sid="THREEFYTP10",       name="ACM 10년 텀프리미엄",     unit="%",   scale=1.0),
+    "ACMTP10":   dict(sid="THREEFYTP10",       name="ACM 10년 텀프리미엄",     unit="%",   scale=1.0),  # FRED엔 ACM이 없어 Kim-Wright로 폴백
     "USDJPY":    dict(sid="DEXJPUS",           name="엔/달러",                unit="",    scale=1.0),
     "IG_OAS":    dict(sid="BAMLC0A0CM",        name="IG 전체 OAS",            unit="bp",  scale=100.0),
     "AA_OAS":    dict(sid="BAMLC0A2CAA",       name="AA OAS (하이퍼스케일러 프록시)", unit="bp", scale=100.0),
 }
+
+# --- 키 없는 원천 소스 (FRED와 동일 데이터) ---
+# 재무부 일별 파 수익률 곡선(명목/실질). 연도별 CSV, 최신일이 위.
+TREASURY_CSV = ("https://home.treasury.gov/resource-center/data-chart-center/interest-rates/"
+                "daily-treasury-rates.csv/{year}/all?type={kind}&field_tdr_date_value={year}&page&_format=csv")
+# 연준 H.4.1 전체 패키지(SDMX XML zip, ~30MB). 주간 수요일 레벨 계열의 DDP 식별자.
+FED_H41_ZIP = "https://www.federalreserve.gov/datadownload/Output.aspx?rel=H41&filetype=zip"
+H41_SERIES = {
+    "FIMA":   "RESPPALGTRF_N.WW",   # Assets: Other: Repurchase agreements - Foreign official
+    "SWAP":   "RESH4SCS_N.WW",      # Central bank liquidity swaps
+    "WALCL":  "RESPPMA_N.WW",       # Total assets (less eliminations)
+    "FRPOOL": "RESPPLLRF_N.WW",     # Reverse repos: Foreign official and international accounts
+}
+# 뉴욕연준 ACM 텀프리미엄(xls, 'ACM Daily' 시트, ACMTP10 열). xlrd 필요.
+NYFED_ACM_XLS = "https://www.newyorkfed.org/medialibrary/media/research/data_indicators/ACMTermPremium.xls"
 
 TD_AUCTION = ("https://www.treasurydirect.gov/TA_WS/securities/search"
               "?type={typ}&days=60&format=json")
@@ -122,6 +139,163 @@ def fetch_fred(sid, lookback_days=420):
         except ValueError:
             continue
     return rows
+
+
+# ------------------------------------------------------------------
+# 키 없는 원천 소스 fetcher
+# ------------------------------------------------------------------
+
+def _treasury_curve(kind, years):
+    """재무부 파 수익률 CSV -> {date: {col_lower: float}}. 명목(daily_treasury_yield_curve)
+    또는 실질(daily_treasury_real_yield_curve). 연초 데이터 부족 대비 전년도까지 합친다."""
+    out = {}
+    for y in years:
+        txt = http_get(TREASURY_CSV.format(year=y, kind=kind)).text
+        rdr = csv.reader(io.StringIO(txt))
+        header = [h.strip().lower() for h in (next(rdr, None) or [])]
+        for row in rdr:
+            if not row or len(row) != len(header):
+                continue
+            try:
+                d = dt.datetime.strptime(row[0].strip(), "%m/%d/%Y").date()
+            except ValueError:
+                continue
+            vals = {}
+            for h, v in zip(header[1:], row[1:]):
+                try:
+                    vals[h] = float(v)
+                except ValueError:
+                    pass
+            if vals:
+                out[d] = vals
+    return out
+
+
+_TREASURY_CACHE = {}
+
+def treasury_curves():
+    if not _TREASURY_CACHE:
+        yr = dt.date.today().year
+        _TREASURY_CACHE["nom"]  = _treasury_curve("daily_treasury_yield_curve", (yr - 1, yr))
+        _TREASURY_CACHE["real"] = _treasury_curve("daily_treasury_real_yield_curve", (yr - 1, yr))
+    return _TREASURY_CACHE
+
+
+def fetch_treasury_yield(col):
+    """명목 곡선 한 컬럼('10 yr', '30 yr') -> [(date, pct)] 오름차순."""
+    nom = treasury_curves()["nom"]
+    rows = [(d, v[col]) for d, v in nom.items() if col in v]
+    rows.sort()
+    if not rows:
+        raise ValueError(f"재무부 곡선에 '{col}' 컬럼 없음")
+    return rows
+
+
+def fetch_t5yifr():
+    """5y5y 포워드 브레이크이븐 — FRED T5YIFR과 같은 공식으로 재무부 명목·실질 곡선에서 계산.
+    T5YIFR = (((1+BE10)^10 / (1+BE5)^5)^(1/5) - 1), BEn = DGSn - DFIIn."""
+    cv = treasury_curves()
+    rows = []
+    for d, n in cv["nom"].items():
+        r = cv["real"].get(d)
+        if not r or "5 yr" not in n or "10 yr" not in n or "5 yr" not in r or "10 yr" not in r:
+            continue
+        be5, be10 = (n["5 yr"] - r["5 yr"]) / 100, (n["10 yr"] - r["10 yr"]) / 100
+        fwd = ((1 + be10) ** 10 / (1 + be5) ** 5) ** (1 / 5) - 1
+        rows.append((d, fwd * 100))
+    rows.sort()
+    if not rows:
+        raise ValueError("명목·실질 곡선 교집합 없음")
+    return rows
+
+
+_H41_CACHE = {}
+
+def fetch_h41(key, lookback_days=420):
+    """연준 H.4.1 데이터패키지(zip/SDMX XML)에서 주간 계열 -> [(date, millions)]."""
+    import zipfile
+    if "xml" not in _H41_CACHE:
+        r = http_get(FED_H41_ZIP, timeout=(10, 120))
+        z = zipfile.ZipFile(io.BytesIO(r.content))
+        name = next(n for n in z.namelist() if n.lower().endswith("_data.xml"))
+        _H41_CACHE["xml"] = z.read(name).decode("utf-8", "replace")
+    xml = _H41_CACHE["xml"]
+    sid = H41_SERIES[key]
+    i = xml.find(f'SERIES_NAME="{sid}"')
+    if i < 0:
+        raise ValueError(f"H.4.1 패키지에 {sid} 없음")
+    j = xml.find("</kf:Series>", i)
+    chunk = xml[i:j]
+    cutoff = dt.date.today() - dt.timedelta(days=lookback_days)
+    rows = []
+    for val, per in re.findall(r'OBS_VALUE="([^"]*)"[^>]*TIME_PERIOD="(\d{4}-\d{2}-\d{2})"', chunk):
+        try:
+            d = dt.date.fromisoformat(per)
+            if d >= cutoff:
+                rows.append((d, float(val)))
+        except ValueError:
+            continue
+    rows.sort()
+    if not rows:
+        raise ValueError(f"{sid} 관측치 없음")
+    return rows
+
+
+def fetch_acm_tp10(lookback_days=420):
+    """뉴욕연준 ACM 일별 10년 텀프리미엄 -> [(date, pct)]."""
+    import xlrd  # pip install xlrd (xls 구형식)
+    r = http_get(NYFED_ACM_XLS, timeout=(10, 90))
+    wb = xlrd.open_workbook(file_contents=r.content)
+    sh = wb.sheet_by_name("ACM Daily")
+    header = [str(c).strip() for c in sh.row_values(0)]
+    ci = header.index("ACMTP10")
+    cutoff = dt.date.today() - dt.timedelta(days=lookback_days)
+    rows = []
+    for ri in range(1, sh.nrows):
+        rv = sh.row_values(ri)
+        try:
+            d = dt.datetime.strptime(str(rv[0]).strip(), "%d-%b-%Y").date()
+            v = float(rv[ci])
+        except (ValueError, TypeError):
+            continue
+        if d >= cutoff:
+            rows.append((d, v))
+    rows.sort()
+    if not rows:
+        raise ValueError("ACM 시트 관측치 없음")
+    return rows
+
+
+# 계열별 1차(원천) 소스. 없으면 FRED만 사용.
+ALT_SOURCES = {
+    "FIMA":    lambda: fetch_h41("FIMA"),
+    "SWAP":    lambda: fetch_h41("SWAP"),
+    "WALCL":   lambda: fetch_h41("WALCL"),
+    "FRPOOL":  lambda: fetch_h41("FRPOOL"),
+    "DGS10":   lambda: fetch_treasury_yield("10 yr"),
+    "DGS30":   lambda: fetch_treasury_yield("30 yr"),
+    "T5YIFR":  fetch_t5yifr,
+    "ACMTP10": fetch_acm_tp10,
+}
+ALT_LABEL = {"FIMA": "H.4.1", "SWAP": "H.4.1", "WALCL": "H.4.1", "FRPOOL": "H.4.1",
+             "DGS10": "재무부", "DGS30": "재무부", "T5YIFR": "재무부(계산)", "ACMTP10": "뉴욕연준"}
+
+
+def fetch_series(key):
+    """원천 소스 우선, 실패 시 FRED. 반환 (rows, source_label)."""
+    meta = SERIES[key]
+    errs = []
+    if key in ALT_SOURCES:
+        try:
+            return ALT_SOURCES[key](), ALT_LABEL[key]
+        except Exception as e:
+            errs.append(f"{ALT_LABEL[key]}: {type(e).__name__} {e}")
+            print(f"    {key} 원천 실패({errs[-1]}) -> FRED 폴백", flush=True)
+    try:
+        return fetch_fred(meta["sid"]), "FRED"
+    except Exception as e:
+        errs.append(f"FRED: {type(e).__name__} {e}")
+    raise RuntimeError(" / ".join(errs))
 
 
 def utc_date(ts):
@@ -361,6 +535,11 @@ def build_signals(data, auctions):
         else:
             st, note = RED, f"레벨/속도 경보(3개월 {rise3m:+.0f}bp) — 금리상승이 기대가 아닌 프리미엄 주도."
         prev = value_at_offset(tp, 28)
+        src = (data.get("_sources") or {}).get("ACMTP10", "")
+        if src == "FRED":
+            note += " ⚠ FRED THREEFYTP10(Kim-Wright) 폴백 — ACM보다 ~20bp 높게 나오는 모형."
+        elif src:
+            note += f" ({src})"
         S.append(Signal("tp10", "ACM 10년 텀프리미엄", st, f"{v:.2f}%", d.isoformat(),
                         fmt_delta(v * 100, prev[1] * 100 if prev else None, "bp", 0), note,
                         "인플레·재정우위", spark(tp)))
@@ -385,6 +564,9 @@ def build_signals(data, auctions):
         S.append(Signal("credit", "AA OAS vs IG OAS", st,
                         f"AA {va:.0f}bp · IG {vi:.0f}bp", d.isoformat(),
                         delta_str, note, "AI 크레딧", spark(aa)))
+    else:
+        S.append(Signal("credit", "AA OAS vs IG OAS", NA, "—", "", "—",
+                        "ICE BofA OAS는 FRED 전용 계열 — FRED_API_KEY 시크릿 등록 시 활성.", "AI 크레딧"))
 
     # -------- 7. 장기물 입찰 --------
     if auctions:
@@ -637,15 +819,20 @@ def main():
     ap.add_argument("--url", default="", help="텔레그램 본문에 붙일 대시보드 URL")
     args = ap.parse_args()
 
-    data, errors = {}, []
+    data, errors, sources = {}, [], {}
+    has_key = bool(os.environ.get("FRED_API_KEY", "").strip())
     for key, meta in SERIES.items():
+        if key == "USDJPY" and not has_key:
+            data[key] = []   # 야후가 1차. 키 없으면 FRED 지연값 시도조차 생략
+            continue
         try:
-            data[key] = fetch_fred(meta["sid"])
-            print(f"[ok] {key:8s} {meta['sid']:<20s} n={len(data[key])}", flush=True)
+            data[key], sources[key] = fetch_series(key)
+            print(f"[ok] {key:8s} {meta['sid']:<20s} n={len(data[key]):<4d} <- {sources[key]}", flush=True)
         except Exception as e:
             errors.append(f"{key}: {e}")
             data[key] = []
-            print(f"[!!] {key:8s} 수집 실패: {e}", file=sys.stderr)
+            print(f"[!!] {key:8s} 수집 실패: {e}", file=sys.stderr, flush=True)
+    data["_sources"] = sources
 
     # 엔/달러는 야후 실시간을 우선 사용(FRED는 4영업일 지연)
     data["_jpy_src"] = "FRED"
