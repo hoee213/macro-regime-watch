@@ -107,6 +107,8 @@ def http_get(url, timeout=(10, 45), retries=2):
     raise last
 
 
+_FRED_STATE = {}
+
 def fetch_fred(sid, lookback_days=420):
     """FRED 관측치 -> [(date, float), ...] 오름차순. 결측('.')은 제외.
 
@@ -115,6 +117,8 @@ def fetch_fred(sid, lookback_days=420):
     """
     start = (dt.date.today() - dt.timedelta(days=lookback_days)).isoformat()
     key = os.environ.get("FRED_API_KEY", "").strip()
+    if _FRED_STATE.get("dead"):
+        raise RuntimeError("FRED 차단(이번 실행에서 이미 실패) — 재시도 생략")
     if key:
         obs = http_get(FRED_API.format(sid=sid, key=key, start=start)).json()
         rows = []
@@ -127,7 +131,13 @@ def fetch_fred(sid, lookback_days=420):
                 continue
         rows.sort()
         return rows
-    txt = http_get(FRED_CSV.format(sid=sid, start=start)).text
+    # 키 없는 CSV 경로: 데이터센터 IP는 차단(무응답)되므로 짧게 한 번만 시도하고,
+    # 실패하면 이번 실행의 나머지 FRED 호출은 모두 생략한다.
+    try:
+        txt = http_get(FRED_CSV.format(sid=sid, start=start), timeout=(10, 20), retries=0).text
+    except requests.RequestException:
+        _FRED_STATE["dead"] = True
+        raise
     rows = []
     rdr = csv.reader(io.StringIO(txt))
     header = next(rdr, None)
