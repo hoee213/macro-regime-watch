@@ -762,7 +762,7 @@ body {{ background:var(--paper); color:var(--ink);
   <div class="wrap" style="padding:0;">
     <div class="eyebrow">Treasury–Fed Regime Watch</div>
     <h1>변곡점 대시보드</h1>
-    <div class="sub">생성 {gen_at} KST · 소스: FRED (H.4.1 계열 포함) · TreasuryDirect</div>
+    <div class="sub">생성 {gen_at} KST · 소스: 재무부 · 연준 H.4.1 · 뉴욕연준 ACM · TreasuryDirect · Yahoo · FRED(OAS)</div>
     <div class="regime st-{ov_st}"><b>[{STATUS_KO[ov_st]}]</b> {ov_note}</div>
   </div>
 </div>
