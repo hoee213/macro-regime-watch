@@ -2,8 +2,9 @@ name: 변곡점 대시보드 갱신
 
 on:
   schedule:
-    # 매일 07:00 KST (22:00 UTC 전일)
-    - cron: '0 22 * * *'
+    # 매일 06:07 KST (21:07 UTC 전일). GitHub 스케줄이 예약보다 2~4.5시간 늦게 돌아(2026-09 실측) 앞당김.
+    # 정각·30분은 혼잡해 분 단위를 비껴 둔다.
+    - cron: '7 21 * * *'
   workflow_dispatch:
 
 permissions:
